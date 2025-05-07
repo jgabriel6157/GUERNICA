@@ -38,8 +38,6 @@ int main(int argc, char *argv[])
     int ode_solver_type = config.Get<int>("ode_solver_type", 3);
     double t_final = config.Get<double>("t_final", 10.0);
     double dt = config.Get<double>("dt", 0.001);
-    bool visualization = config.Get<bool>("visualization", true);
-    bool paraview = config.Get<bool>("paraview", true);
     int vis_steps = config.Get<int>("vis_steps", 100);
     bool pa = false, ea = false, fa = false;
     const char *device_config = "cpu";
@@ -54,8 +52,6 @@ int main(int argc, char *argv[])
     args.AddOption(&ode_solver_type, "-s", "--ode-solver", "ODE solver type.");
     args.AddOption(&t_final, "-tf", "--t-final", "Final time.");
     args.AddOption(&dt, "-dt", "--time-step", "Time step.");
-    args.AddOption(&visualization, "-vis", "--visualization", "-no-vis", "--no-visualization", "Enable/disable GLVis.");
-    args.AddOption(&paraview, "-paraview", "--paraview-datafiles", "-no-paraview", "--no-paraview-datafiles", "Enable/disable ParaView.");
     args.AddOption(&vis_steps, "-vs", "--visualization-steps", "Steps between visualization outputs.");
     args.AddOption(&pa, "-pa", "--partial-assembly", "-no-pa", "--no-partial-assembly", "Enable Partial Assembly.");
     args.AddOption(&ea, "-ea", "--element-assembly", "-no-ea", "--no-element-assembly", "Enable Element Assembly.");
@@ -133,36 +129,6 @@ int main(int argc, char *argv[])
         u.Save(osol);
     }
 
-    ParaViewDataCollection *pd = nullptr;
-    if (paraview)
-    {
-        pd = new ParaViewDataCollection("Example9", &mesh);
-        pd->SetPrefixPath("ParaView");
-        pd->RegisterField("solution", &u);
-        pd->SetLevelsOfDetail(order);
-        pd->SetDataFormat(VTKFormat::BINARY);
-        pd->SetHighOrderOutput(true);
-        pd->SetCycle(0);
-        pd->SetTime(0.0);
-        pd->Save();
-    }
-
-    socketstream sout;
-    if (visualization)
-    {
-        sout.open("localhost", 19916);
-        if (!sout)
-        {
-            cout << "GLVis server not found. Visualization disabled." << endl;
-            visualization = false;
-        }
-        else
-        {
-            sout.precision(precision);
-            sout << "solution\n" << mesh << u << "pause\n" << flush;
-        }
-    }
-
     FE_Evolution adv(m, k, b);
     double t = 0.0;
     adv.SetTime(t);
@@ -179,22 +145,9 @@ int main(int argc, char *argv[])
             ofstream sol_out("ex9-" + to_string(ti+1) + ".gf");
             sol_out.precision(precision);
             u.Save(sol_out);
-
-            if (visualization)
-            {
-                sout << "solution\n" << mesh << u << "pause 0.1\n" << flush;
-            }
-
-            if (paraview)
-            {
-                pd->SetCycle(ti+1);
-                pd->SetTime(t);
-                pd->Save();
-            }
         }
     }
 
     delete ode_solver;
-    delete pd;
     return 0;
 }

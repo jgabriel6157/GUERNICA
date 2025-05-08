@@ -140,4 +140,4 @@ def animate_dg_solution(mesh_file, base_gf_pattern, start=0, stop=1000, step=100
 # === Example usage ===
 # visualize_dg_solution("ex9.mesh", "ex9-0.gf")
 
-animate_dg_solution("ex9.mesh", "ex9-{}.gf", start=0, stop=10, step=1, delay=0.1)
+animate_dg_solution("ex9.mesh", "ex9-v-1-{}.gf", start=10, stop=1000, step=10, delay=0.1)

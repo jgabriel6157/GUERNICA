@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
 {
     // Load config
     InputConfig config("input.cfg");
-    std::string mesh_file_str = config.Get<std::string>("mesh_file", "external/mfem/data/periodic-segment.mesh");
+    std::string mesh_file_str = config.Get<std::string>("mesh_file", "mesh/periodic-segment.mesh");
     const char *mesh_file = mesh_file_str.c_str();
     int order = config.Get<int>("order", 4);
     int ode_solver_type = config.Get<int>("ode_solver_type", 3);

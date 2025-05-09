@@ -182,7 +182,7 @@ int main(int argc, char *argv[])
             for (int i = 0; i < Nv; i++)
             {
                 ostringstream name;
-                name << "ex9-v" << vNodes[i] << "-" << (ti+1) << ".gf";
+                name << "ex9-v" << i << "-" << (ti+1) << ".gf";
                 ofstream sol_out(name.str());
                 sol_out.precision(precision);
                 u[i].Save(sol_out);

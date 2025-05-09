@@ -6,12 +6,12 @@
 #include <fstream>
 #include <iostream>
 #include <cmath>
-#include <sys/stat.h>
+#include <filesystem>
 
 using namespace mfem;
 using namespace std;
+namespace fs = std::filesystem;
 
-// Velocity coefficient factory for a given velocity value
 VectorFunctionCoefficient MakeVelocityCoefficient(int dim, double v_value)
 {
     return VectorFunctionCoefficient(dim, [=](const Vector &x, Vector &v) 
@@ -22,13 +22,11 @@ VectorFunctionCoefficient MakeVelocityCoefficient(int dim, double v_value)
     });
 }
 
-// Initial condition
 double u0_function(const Vector &x)
 {
     return exp(-50.0 * pow(x(0) - 0.5, 2));
 }
 
-// Inflow boundary condition
 double inflow_function(const Vector &x)
 {
     return 0.0;
@@ -71,8 +69,12 @@ int main(int argc, char *argv[])
     if (!args.Good()) { args.PrintUsage(cout); return 1; }
     args.PrintOptions(cout);
 
-    // Create output directory if it doesn't exist
-    mkdir("gf_out", 0777);  // no-op if it already exists
+    std::string out_dir = "gf_out";
+    if (fs::exists(out_dir)) 
+    {
+        fs::remove_all(out_dir);
+    }
+    fs::create_directory(out_dir);
 
     Device device(device_config);
     device.Print();
@@ -80,50 +82,67 @@ int main(int argc, char *argv[])
     Mesh mesh(mesh_file, 1, 1);
     int dim = mesh.Dimension();
 
-    // Velocity nodes (DVM)
+    // Velocity grid
     std::vector<double> vNodes(num_vel);
-    for (int i = 0; i < num_vel; i++)
+    for (int i = 0; i < num_vel; i++) 
     {
         vNodes[i] = vmin + i * (vmax - vmin) / (num_vel - 1);
     }
-    int Nv = vNodes.size();    
+    int Nv = vNodes.size();
 
     // FE space
     DG_FECollection fec(order, dim, BasisType::GaussLobatto);
     FiniteElementSpace fes(&mesh, &fec);
     cout << "Number of unknowns per velocity: " << fes.GetVSize() << endl;
 
-    // Solution per velocity node
-    std::vector<GridFunction> u;
-    for (int i = 0; i < Nv; i++) 
-    {
-        u.emplace_back(&fes);
-        FunctionCoefficient u0(u0_function);
-        u[i].ProjectCoefficient(u0);
-    }
+    // Shared mass matrix
+    BilinearForm *m = new BilinearForm(&fes);
+    m->AddDomainIntegrator(new MassIntegrator);
+    if (pa) m->SetAssemblyLevel(AssemblyLevel::PARTIAL);
+    else if (ea) m->SetAssemblyLevel(AssemblyLevel::ELEMENT);
+    else if (fa) m->SetAssemblyLevel(AssemblyLevel::FULL);
+    m->Assemble();
+    m->Finalize();
 
-    // Mass, convection, RHS vector, evolution, solver
-    std::vector<BilinearForm*> m(Nv), k(Nv);
+    // Solution vectors and structures per velocity
+    std::vector<GridFunction> u;
+    std::vector<BilinearForm*> k(Nv);
     std::vector<Vector> b(Nv);
     std::vector<FE_Evolution*> evolution(Nv);
     std::vector<ODESolver*> solver(Nv);
 
+    // Solver factory
+    auto make_solver = [&]() -> ODESolver* 
+    {
+        switch (ode_solver_type)
+        {
+            case 1:  return new ForwardEulerSolver;
+            case 2:  return new RK2Solver(1.0);
+            case 3:  return new RK3SSPSolver;
+            case 4:  return new RK4Solver;
+            case 6:  return new RK6Solver;
+            case 11: return new BackwardEulerSolver;
+            case 12: return new SDIRK23Solver(2);
+            case 13: return new SDIRK33Solver;
+            case 22: return new ImplicitMidpointSolver;
+            case 23: return new SDIRK23Solver;
+            case 24: return new SDIRK34Solver;
+            default:
+                cerr << "Unknown ODE solver type: " << ode_solver_type << endl;
+                exit(3);
+        }
+    };
+
     for (int i = 0; i < Nv; i++)
     {
-        // Velocity coefficient for v_i
+        u.emplace_back(&fes);
+        FunctionCoefficient u0(u0_function);
+        u[i].ProjectCoefficient(u0);
+
         auto vel_coeff = MakeVelocityCoefficient(dim, vNodes[i]);
         FunctionCoefficient inflow(inflow_function);
 
-        // Mass
-        m[i] = new BilinearForm(&fes);
-        m[i]->AddDomainIntegrator(new MassIntegrator);
-        if (pa) m[i]->SetAssemblyLevel(AssemblyLevel::PARTIAL);
-        else if (ea) m[i]->SetAssemblyLevel(AssemblyLevel::ELEMENT);
-        else if (fa) m[i]->SetAssemblyLevel(AssemblyLevel::FULL);
-        m[i]->Assemble();
-        m[i]->Finalize();
-
-        // Convection
+        // Convection matrix
         k[i] = new BilinearForm(&fes);
         k[i]->AddDomainIntegrator(new ConvectionIntegrator(vel_coeff, -1.0));
         k[i]->AddInteriorFaceIntegrator(new NonconservativeDGTraceIntegrator(vel_coeff, -1.0));
@@ -134,44 +153,28 @@ int main(int argc, char *argv[])
         k[i]->Assemble();
         k[i]->Finalize();
 
-        // Boundary flow
+        // Boundary flow vector
         LinearForm bform(&fes);
         bform.AddBdrFaceIntegrator(new BoundaryFlowIntegrator(inflow, vel_coeff, -1.0));
         bform.Assemble();
         b[i] = bform;
 
-        // Evolution operator and solver
-        evolution[i] = new FE_Evolution(*m[i], *k[i], b[i]);
+        // Evolution and solver
+        evolution[i] = new FE_Evolution(*m, *k[i], b[i]);
         evolution[i]->SetTime(0.0);
-
-        switch (ode_solver_type)
-        {
-            case 1:  solver[i] = new ForwardEulerSolver; break;
-            case 2:  solver[i] = new RK2Solver(1.0); break;
-            case 3:  solver[i] = new RK3SSPSolver; break;
-            case 4:  solver[i] = new RK4Solver; break;
-            case 6:  solver[i] = new RK6Solver; break;
-            case 11: solver[i] = new BackwardEulerSolver; break;
-            case 12: solver[i] = new SDIRK23Solver(2); break;
-            case 13: solver[i] = new SDIRK33Solver; break;
-            case 22: solver[i] = new ImplicitMidpointSolver; break;
-            case 23: solver[i] = new SDIRK23Solver; break;
-            case 24: solver[i] = new SDIRK34Solver; break;
-            default: cerr << "Unknown ODE solver type: " << ode_solver_type << endl; return 3;
-        }
-
+        solver[i] = make_solver();
         solver[i]->Init(*evolution[i]);
     }
 
-    // Save mesh
+    // Save mesh and initial solutions
     ofstream omesh("ex9.mesh");
     omesh.precision(precision);
     mesh.Print(omesh);
 
-    for (int i = 0; i < Nv; i++)
+    for (int i = 0; i < Nv; i++) 
     {
         ostringstream name;
-        name << "gf_out/ex9-v" << i << "-" << "0" << ".gf";
+        name << "gf_out/ex9-v" << i << "-0.gf";
         ofstream sol_out(name.str());
         sol_out.precision(precision);
         u[i].Save(sol_out);
@@ -182,17 +185,17 @@ int main(int argc, char *argv[])
     for (int ti = 0; t < t_final - 1e-8 * dt; ti++)
     {
         double dt_real = min(dt, t_final - t);
-        for (int i = 0; i < Nv; i++)
+        for (int i = 0; i < Nv; i++) 
         {
-            double current_time = t;
-            solver[i]->Step(u[i], current_time, dt_real);
+            double local_t = t;
+            solver[i]->Step(u[i], local_t, dt_real);
         }
-        t+=dt_real;
+        t += dt_real;
 
         if ((ti+1) % vis_steps == 0 || t + 1e-8*dt >= t_final)
         {
             cout << "Step " << ti+1 << ", time = " << t << endl;
-            for (int i = 0; i < Nv; i++)
+            for (int i = 0; i < Nv; i++) 
             {
                 ostringstream name;
                 name << "gf_out/ex9-v" << i << "-" << (ti+1) << ".gf";
@@ -204,9 +207,8 @@ int main(int argc, char *argv[])
     }
 
     // Cleanup
-    for (int i = 0; i < Nv; i++) 
-    {
-        delete m[i];
+    delete m;
+    for (int i = 0; i < Nv; i++) {
         delete k[i];
         delete evolution[i];
         delete solver[i];

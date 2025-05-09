@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <cmath>
+#include <sys/stat.h>
 
 using namespace mfem;
 using namespace std;
@@ -69,6 +70,9 @@ int main(int argc, char *argv[])
     args.Parse();
     if (!args.Good()) { args.PrintUsage(cout); return 1; }
     args.PrintOptions(cout);
+
+    // Create output directory if it doesn't exist
+    mkdir("gf_out", 0777);  // no-op if it already exists
 
     Device device(device_config);
     device.Print();
@@ -164,6 +168,15 @@ int main(int argc, char *argv[])
     omesh.precision(precision);
     mesh.Print(omesh);
 
+    for (int i = 0; i < Nv; i++)
+    {
+        ostringstream name;
+        name << "gf_out/ex9-v" << i << "-" << "0" << ".gf";
+        ofstream sol_out(name.str());
+        sol_out.precision(precision);
+        u[i].Save(sol_out);
+    }
+
     // Time loop
     double t = 0.0;
     for (int ti = 0; t < t_final - 1e-8 * dt; ti++)
@@ -182,7 +195,7 @@ int main(int argc, char *argv[])
             for (int i = 0; i < Nv; i++)
             {
                 ostringstream name;
-                name << "ex9-v" << i << "-" << (ti+1) << ".gf";
+                name << "gf_out/ex9-v" << i << "-" << (ti+1) << ".gf";
                 ofstream sol_out(name.str());
                 sol_out.precision(precision);
                 u[i].Save(sol_out);

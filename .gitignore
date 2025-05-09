@@ -34,3 +34,4 @@
 # Output Files
 *.gf
 ParaView/
+gf_out/

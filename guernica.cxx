@@ -24,11 +24,6 @@ VectorFunctionCoefficient MakeVelocityCoefficient(int dim, double v_value)
     });
 }
 
-double u0_function(const Vector &x)
-{
-    return exp(-50.0 * pow(x(0) - 0.5, 2));
-}
-
 double inflow_function(const Vector &x)
 {
     return 0.0;
@@ -141,8 +136,21 @@ int main(int argc, char *argv[])
 
     for (int i = 0; i < Nv; i++)
     {
+        double v_i = vNodes[i];
+
+        FunctionCoefficient u0([=](const Vector &x)
+        {
+            double rho = 1.0*exp(-50.0 * pow(x(0) - 0.5, 2)); // or compute from x
+            double T = 0.1;
+            double u_bulk = 0.0;
+    
+            double coeff = rho / sqrt(2.0 * M_PI * T);
+            double exponent = -pow(v_i - u_bulk, 2) / (2.0 * T);
+    
+            return coeff * exp(exponent);
+        });
+    
         u.emplace_back(&fes);
-        FunctionCoefficient u0(u0_function);
         u[i].ProjectCoefficient(u0);
 
         auto vel_coeff = MakeVelocityCoefficient(dim, vNodes[i]);

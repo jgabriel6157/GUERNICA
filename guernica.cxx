@@ -2,6 +2,8 @@
 #include "InputConfig.hxx"
 #include "DG_Solver.hxx"
 #include "FE_Evolution.hxx"
+#include "IonizationOperator.hxx"
+#include "OperatorToTimeDependent.hxx"
 
 #include <fstream>
 #include <iostream>
@@ -46,6 +48,7 @@ int main(int argc, char *argv[])
     double vmin = config.Get<double>("vmin", 0.0);
     double vmax = config.Get<double>("vmax", 1.0);
     int num_vel = config.Get<int>("num_vel", 2);
+    double ionization_rate = config.Get<double>("ionization_rate",0.0);
     bool pa = false, ea = false, fa = false;
     const char *device_config = "cpu";
 
@@ -110,6 +113,9 @@ int main(int argc, char *argv[])
     std::vector<Vector> b(Nv);
     std::vector<FE_Evolution*> evolution(Nv);
     std::vector<ODESolver*> solver(Nv);
+    std::vector<IonizationOperator*> ionization(Nv);
+    std::vector<Operator*> rhs_operator(Nv);
+    std::vector<OperatorToTimeDependent*> td_rhs_operator(Nv);
 
     // Solver factory
     auto make_solver = [&]() -> ODESolver* 
@@ -162,8 +168,16 @@ int main(int argc, char *argv[])
         // Evolution and solver
         evolution[i] = new FE_Evolution(*m, *k[i], b[i]);
         evolution[i]->SetTime(0.0);
+        
+        // Add collision operator: -S*u
+        ionization[i] = new IonizationOperator(fes.GetVSize(), ionization_rate);
+
+        // Combine: du/dt = transport + ionization
+        rhs_operator[i] = new SumOperator(evolution[i],1.0,ionization[i],1.0,false,false);
+        td_rhs_operator[i] = new OperatorToTimeDependent(*rhs_operator[i]);
+
         solver[i] = make_solver();
-        solver[i]->Init(*evolution[i]);
+        solver[i]->Init(*td_rhs_operator[i]);
     }
 
     // Save mesh and initial solutions
@@ -208,9 +222,13 @@ int main(int argc, char *argv[])
 
     // Cleanup
     delete m;
-    for (int i = 0; i < Nv; i++) {
+    for (int i = 0; i < Nv; i++) 
+    {
         delete k[i];
         delete evolution[i];
+        delete ionization[i];
+        delete rhs_operator[i];
+        delete td_rhs_operator[i];
         delete solver[i];
     }
 

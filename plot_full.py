@@ -233,7 +233,7 @@ def animate_dg_solution_3d_wireframe(mesh_file, gf_pattern, vmin, vmax, num_vel,
                                     #  vmin=-1.0, vmax=1.0, num_vel=9,
                                     #  start=10, stop=1000, step=10, delay=0.1)
 animate_dg_solution_3d_wireframe("ex9.mesh", "gf_out/ex9-v{}-{}.gf",
-                                 vmin=-1.0, vmax=1.0, num_vel=9,
-                                 start=0, stop=48000, step=400, delay=0.1)
+                                 vmin=-20.0, vmax=20.0, num_vel=31,
+                                 start=0, stop=1000, step=100, delay=0.1)
 
 

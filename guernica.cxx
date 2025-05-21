@@ -24,9 +24,69 @@ VectorFunctionCoefficient MakeVelocityCoefficient(int dim, double v_value)
     });
 }
 
-double inflow_function(const Vector &x)
+Vector integrate1D(const std::vector<GridFunction> &u,
+                   const std::vector<double> &vNodes,
+                   int power)
 {
-    return 0.0;
+    int nv = vNodes.size();
+    int ndof = u[0].Size();
+    double dv = vNodes[1] - vNodes[0];
+
+    Vector result(ndof);
+    result = 0.0;
+
+    // Simpson's rule
+    for (int i = 0; i < nv; i++)
+    {
+        const double *f_i = u[i].GetData();
+        double v = vNodes[i];
+        double w;
+
+        if (i == 0 || i == nv - 1)
+            w = 1.0;
+        else if (i % 2 == 1)
+            w = 4.0;
+        else
+            w = 2.0;
+
+        double factor = w * pow(v, power);
+        for (int j = 0; j < ndof; j++)
+        {
+            result[j] += factor * f_i[j];
+        }
+    }
+
+    result *= dv / 3.0;
+    return result;
+}
+
+void ComputeMoments(const std::vector<GridFunction> &u,
+                    const std::vector<double> &vNodes,
+                    const FiniteElementSpace &fes,
+                    GridFunction &rho,
+                    GridFunction &u_bulk,
+                    GridFunction &T)
+{
+    Vector rho_v = integrate1D(u, vNodes, 0);
+    Vector mom_v = integrate1D(u, vNodes, 1);
+    Vector E_v   = integrate1D(u, vNodes, 2);
+
+    int ndof = fes.GetVSize();
+
+    rho.SetSize(ndof);
+    u_bulk.SetSize(ndof);
+    T.SetSize(ndof);
+
+    for (int i = 0; i < ndof; i++)
+    {
+        double r = rho_v[i];
+        double u = mom_v[i] / r;
+        double E = E_v[i];
+
+        rho[i] = r;
+        u_bulk[i] = u;
+        T[i] = (E - r * u * u) / r;
+    }
 }
 
 int main(int argc, char *argv[])
@@ -112,6 +172,8 @@ int main(int argc, char *argv[])
     std::vector<Operator*> rhs_operator(Nv);
     std::vector<OperatorToTimeDependent*> td_rhs_operator(Nv);
 
+    GridFunction rho(&fes), u_bulk(&fes), T(&fes);
+
     // Solver factory
     auto make_solver = [&]() -> ODESolver* 
     {
@@ -140,8 +202,17 @@ int main(int argc, char *argv[])
 
         FunctionCoefficient u0([=](const Vector &x)
         {
-            double rho = 1.0*exp(-50.0 * pow(x(0) - 0.5, 2)); // or compute from x
-            double T = 0.1;
+            double xVal = x(0);
+            double rho;
+            if (x(0)<20)
+            {
+                rho = 5*(pow(cosh((20.0+(xVal-20.0))/2),-2)+1e-6);
+            }
+            else
+            {
+                rho = 5*(pow(cosh((20.0-(xVal-20.0))/2),-2)+1e-6);
+            }
+            double T = 2;
             double u_bulk = 0.0;
     
             double coeff = rho / sqrt(2.0 * M_PI * T);
@@ -154,7 +225,19 @@ int main(int argc, char *argv[])
         u[i].ProjectCoefficient(u0);
 
         auto vel_coeff = MakeVelocityCoefficient(dim, vNodes[i]);
-        FunctionCoefficient inflow(inflow_function);
+        FunctionCoefficient inflow([=](const Vector &x)
+        {
+            double T_rec = 2;
+            double rho_rec = 4.98;
+            double u_rec = sqrt(20.0);
+
+            double sign = (v_i > 0) ? 1.0 : -1.0;
+            double u_shift = (x(0) < 1e-6) ? u_rec : -u_rec;  // left = +u_rec, right = -u_rec
+
+            double coeff = rho_rec / sqrt(2.0 * M_PI * T_rec);
+            double exponent = -pow(v_i - u_shift, 2) / (2.0 * T_rec);
+            return coeff * exp(exponent);
+        });
 
         // Convection matrix
         k[i] = new BilinearForm(&fes);
@@ -202,6 +285,14 @@ int main(int argc, char *argv[])
         u[i].Save(sol_out);
     }
 
+    ComputeMoments(u, vNodes, fes, rho, u_bulk, T);
+
+    std::ostringstream rname;
+    rname << "gf_out/rho-" << 0 << ".gf";
+    std::ofstream rout(rname.str());
+    rout.precision(precision);
+    rho.Save(rout);
+
     // Time loop
     double t = 0.0;
     for (int ti = 0; t < t_final - 1e-8 * dt; ti++)
@@ -214,6 +305,8 @@ int main(int argc, char *argv[])
         }
         t += dt_real;
 
+        ComputeMoments(u, vNodes, fes, rho, u_bulk, T);
+
         if ((ti+1) % vis_steps == 0 || t + 1e-8*dt >= t_final)
         {
             cout << "Step " << ti+1 << ", time = " << t << endl;
@@ -224,6 +317,12 @@ int main(int argc, char *argv[])
                 ofstream sol_out(name.str());
                 sol_out.precision(precision);
                 u[i].Save(sol_out);
+
+                std::ostringstream rname;
+                rname << "gf_out/rho-" << (ti+1) << ".gf";
+                std::ofstream rout(rname.str());
+                rout.precision(precision);
+                rho.Save(rout);
             }
         }
     }

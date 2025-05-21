@@ -3,6 +3,35 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numpy.polynomial.legendre import Legendre
 from scipy.optimize import newton
+from scipy.integrate import quad
+
+A = 0.291e-7
+P = 0
+U = 13.6 / 20
+X = 0.232
+K = 0.39
+n0 = 5*10**18  
+Tw = 2  
+csL = np.sqrt(20)  
+csR = -np.sqrt(20)  
+Crec = 4.98*10**18  
+Lz = 40
+
+def sigma(A, P, U, X, K):
+    return A * (1 + P * np.sqrt(U)) * U**K * np.exp(-U) / (X + U) * 1e-6
+
+def integrand_1(v, z):
+    return (1 / np.sqrt(2 * np.pi * Tw)) * Crec * np.exp(-((v - csL) ** 2) / (2 * Tw)) * \
+           np.exp(-n0 * sigma(A, P, U, X, K) * np.sqrt(1.672e-27 / 1.602e-19) * (z) / v)
+
+def integrand_2(v, z):
+    return (1 / np.sqrt(2 * np.pi * Tw)) * Crec * np.exp(-((v - csR) ** 2) / (2 * Tw)) * \
+           np.exp(-n0 * sigma(A, P, U, X, K) * np.sqrt(1.672e-27 / 1.602e-19) * (z - Lz) / v)
+
+def f(z):
+    integral_1, _ = quad(integrand_1, 0, np.inf, args=(z,))
+    integral_2, _ = quad(integrand_2, -np.inf, 0, args=(z,))
+    return integral_1 + integral_2
 
 # --- Parse MFEM 1D mesh with linear geometry ---
 def parse_mesh_with_nodes(mesh_path):
@@ -66,14 +95,21 @@ def visualize_dg_solution(mesh_file, gf_file):
         x_phys = 0.5 * (x1 - x0) * x_eval + 0.5 * (x0 + x1)
 
         coeff_local = coeffs[idx:idx + dofs_per_elem]
-        u_vals = basis @ coeff_local
+        u_vals = basis @ coeff_local           
 
-        plt.plot(x_phys, u_vals, color='k')
+        plt.plot(x_phys, u_vals*1e18, color='k')
         idx += dofs_per_elem
 
+    x_vals = np.linspace(0, Lz, 100)  # Avoiding 0 and Lz to prevent divide-by-zero
+    f_vals = [f(z) for z in x_vals]
+    plt.plot(x_vals,f_vals,color='red',linestyle = '--')
+
     plt.title(f"DG Solution (Order {order}) on Linear Mesh")
+    plt.xlim(vertices.min(), vertices.max())
+    plt.ylim(1e9, 1e19)
+    plt.yscale('log')
     plt.xlabel("x")
-    plt.ylabel("u(x)")
+    plt.ylabel("rho(x)")
     plt.grid(True)
     plt.tight_layout()
     plt.show()
@@ -121,16 +157,17 @@ def animate_dg_solution(mesh_file, base_gf_pattern, start=0, stop=1000, step=100
     lines = [ax.plot(x, np.zeros_like(x), color='k')[0] for x in x_phys_list]
 
     ax.set_xlim(vertices.min(), vertices.max())
-    ax.set_ylim(-0.1, 1.1)
+    ax.set_ylim(1e9, 1e19)
+    ax.set_yscale('log')
     ax.set_xlabel("x")
-    ax.set_ylabel("u(x)")
+    ax.set_ylabel("rho(x)")
     ax.grid(True)
 
     for t_idx, coeffs in zip(time_indices, solutions):
         for i in range(num_elements):
             coeff_local = coeffs[i*dofs_per_elem:(i+1)*dofs_per_elem]
             u_vals = basis @ coeff_local
-            lines[i].set_data(x_phys_list[i], u_vals)
+            lines[i].set_data(x_phys_list[i], u_vals*1e18)
 
         ax.set_title(f"Time Step: {t_idx}")
         plt.pause(delay)
@@ -138,6 +175,6 @@ def animate_dg_solution(mesh_file, base_gf_pattern, start=0, stop=1000, step=100
     plt.show()
 
 # === Example usage ===
-# visualize_dg_solution("ex9.mesh", "ex9-0.gf")
+visualize_dg_solution("ex9.mesh", "gf_out/rho-9000.gf")
 
-animate_dg_solution("ex9.mesh", "ex9-v0-{}.gf", start=10, stop=1000, step=10, delay=0.1)
+# animate_dg_solution("ex9.mesh", "gf_out/rho-{}.gf", start=0, stop=9000, step=100, delay=0.1)

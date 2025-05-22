@@ -1,5 +1,4 @@
-#ifndef OPERATOR_TO_TIME_DEPENDENT_HXX
-#define OPERATOR_TO_TIME_DEPENDENT_HXX
+#pragma once
 
 #include "mfem.hpp"
 
@@ -15,5 +14,3 @@ public:
 
     virtual void ImplicitSolve(double dt, const mfem::Vector &x, mfem::Vector &k) override;
 };
-
-#endif

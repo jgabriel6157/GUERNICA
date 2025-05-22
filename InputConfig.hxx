@@ -1,5 +1,4 @@
-#ifndef INPUT_CONFIG_HXX
-#define INPUT_CONFIG_HXX
+#pragma once
 
 #include <string>
 #include <unordered_map>
@@ -28,6 +27,3 @@ public:
 private:
     std::unordered_map<std::string, std::string> params;
 };
-
-#endif
-

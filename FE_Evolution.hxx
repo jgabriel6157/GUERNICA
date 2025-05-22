@@ -1,5 +1,4 @@
-#ifndef FE_EVOLUTION_HXX
-#define FE_EVOLUTION_HXX
+#pragma once
 
 #include "mfem.hpp"
 #include "DG_Solver.hxx"
@@ -20,5 +19,3 @@ public:
     virtual void ImplicitSolve(const double dt, const mfem::Vector &x, mfem::Vector &k) override;
     virtual ~FE_Evolution();
 };
-
-#endif

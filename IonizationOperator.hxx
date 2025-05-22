@@ -1,5 +1,4 @@
-#ifndef IONIZATION_OPERATOR_HXX
-#define IONIZATION_OPERATOR_HXX
+#pragma once
 
 #include "mfem.hpp"
 
@@ -15,5 +14,3 @@ public:
 
     virtual void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
 };
-
-#endif

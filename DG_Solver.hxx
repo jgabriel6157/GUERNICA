@@ -1,5 +1,4 @@
-#ifndef DG_SOLVER_HXX
-#define DG_SOLVER_HXX
+#pragma once
 
 #include "mfem.hpp"
 
@@ -17,5 +16,3 @@ public:
     virtual void SetOperator(const mfem::Operator &op) override;
     virtual void Mult(const mfem::Vector &x, mfem::Vector &y) const override;
 };
-
-#endif

@@ -3,6 +3,7 @@
 #include "DG_Solver.hxx"
 #include "FE_Evolution.hxx"
 #include "IonizationOperator.hxx"
+#include "ChargeExchangeOperator.hxx"
 #include "OperatorToTimeDependent.hxx"
 
 #include <fstream>
@@ -104,6 +105,7 @@ int main(int argc, char *argv[])
     double vmax = config.Get<double>("vmax", 1.0);
     int num_vel = config.Get<int>("num_vel", 2);
     double ionization_rate = config.Get<double>("ionization_rate",0.0);
+    double cx_rate = config.Get<double>("cx_rate",0.0);
     bool pa = false, ea = false, fa = false;
     const char *device_config = "cpu";
 
@@ -169,6 +171,7 @@ int main(int argc, char *argv[])
     std::vector<FE_Evolution*> evolution(Nv);
     std::vector<ODESolver*> solver(Nv);
     std::vector<IonizationOperator*> ionization(Nv);
+    std::vector<ChargeExchangeOperator*> cx_operator(Nv);
     std::vector<Operator*> rhs_operator(Nv);
     std::vector<OperatorToTimeDependent*> td_rhs_operator(Nv);
 
@@ -195,6 +198,19 @@ int main(int argc, char *argv[])
                 exit(3);
         }
     };
+
+    // Constant coefficients for plasma parameters
+    ConstantCoefficient ni_coeff(5.0), Ti_coeff(20.0);
+    FunctionCoefficient ui_coeff([=](const Vector &x)
+    {
+        return (x(0) > 20.0) ? sqrt(20) : -sqrt(20);
+    });
+
+    // Project into GridFunctions
+    GridFunction ni_gf(&fes), ui_gf(&fes), Ti_gf(&fes);
+    ni_gf.ProjectCoefficient(ni_coeff);
+    ui_gf.ProjectCoefficient(ui_coeff);
+    Ti_gf.ProjectCoefficient(Ti_coeff);
 
     for (int i = 0; i < Nv; i++)
     {
@@ -263,8 +279,12 @@ int main(int argc, char *argv[])
         // Add collision operator: -S*u
         ionization[i] = new IonizationOperator(fes.GetVSize(), ionization_rate);
 
+        // Add CX operator
+        cx_operator[i] = new ChargeExchangeOperator(u[i], ni_gf, ui_gf, Ti_gf, vNodes[i], cx_rate);
+
         // Combine: du/dt = transport + ionization
         rhs_operator[i] = new SumOperator(evolution[i],1.0,ionization[i],1.0,false,false);
+        rhs_operator[i] = new SumOperator(rhs_operator[i], 1.0, cx_operator[i], 1.0, true, false);
         td_rhs_operator[i] = new OperatorToTimeDependent(*rhs_operator[i]);
 
         solver[i] = make_solver();
@@ -286,6 +306,10 @@ int main(int argc, char *argv[])
     }
 
     ComputeMoments(u, vNodes, fes, rho, u_bulk, T);
+    for (int i = 0; i < Nv; i++) 
+    {
+        cx_operator[i]->SetNeutralDensity(rho);
+    }
 
     std::ostringstream rname;
     rname << "gf_out/rho-" << 0 << ".gf";
@@ -300,12 +324,17 @@ int main(int argc, char *argv[])
         double dt_real = min(dt, t_final - t);
         for (int i = 0; i < Nv; i++) 
         {
+            // std::cout << "velocity = " << i << " ************************\n";
             double local_t = t;
             solver[i]->Step(u[i], local_t, dt_real);
         }
         t += dt_real;
 
         ComputeMoments(u, vNodes, fes, rho, u_bulk, T);
+        for (int i = 0; i < Nv; i++) 
+        {
+            cx_operator[i]->SetNeutralDensity(rho);
+        }
 
         if ((ti+1) % vis_steps == 0 || t + 1e-8*dt >= t_final)
         {
@@ -334,6 +363,7 @@ int main(int argc, char *argv[])
         delete k[i];
         delete evolution[i];
         delete ionization[i];
+        delete cx_operator[i];
         delete rhs_operator[i];
         delete td_rhs_operator[i];
         delete solver[i];

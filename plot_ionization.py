@@ -100,13 +100,13 @@ def visualize_dg_solution(mesh_file, gf_file):
         plt.plot(x_phys, u_vals*1e18, color='k')
         idx += dofs_per_elem
 
-    x_vals = np.linspace(0, Lz, 100)  # Avoiding 0 and Lz to prevent divide-by-zero
+    x_vals = np.linspace(0, Lz, 100)
     f_vals = [f(z) for z in x_vals]
     plt.plot(x_vals,f_vals,color='red',linestyle = '--')
 
     plt.title(f"DG Solution (Order {order}) on Linear Mesh")
     plt.xlim(vertices.min(), vertices.max())
-    plt.ylim(1e8, 1e19)
+    plt.ylim(1e9, 1e19)
     plt.yscale('log')
     plt.xlabel("x")
     plt.ylabel("rho(x)")
@@ -175,6 +175,6 @@ def animate_dg_solution(mesh_file, base_gf_pattern, start=0, stop=1000, step=100
     plt.show()
 
 # === Example usage ===
-# visualize_dg_solution("ex9.mesh", "gf_out/rho-9000.gf")
+visualize_dg_solution("ex9.mesh", "gf_out/rho-9000.gf")
 
-animate_dg_solution("ex9.mesh", "gf_out/rho-{}.gf", start=0, stop=9000, step=100, delay=0.1)
+# animate_dg_solution("ex9.mesh", "gf_out/rho-{}.gf", start=0, stop=9000, step=100, delay=0.1)

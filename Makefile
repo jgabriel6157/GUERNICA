@@ -15,7 +15,7 @@ LDFLAGS         = -L$(MFEM_BUILD_DIR) -lmfem -lrt -ldl -lpthread
 # Files
 # ---------------------
 
-COMMON_SRC      = InputConfig.cxx DG_Solver.cxx FE_Evolution.cxx IonizationOperator.cxx OperatorToTimeDependent.cxx
+COMMON_SRC      = InputConfig.cxx DG_Solver.cxx FE_Evolution.cxx IonizationOperator.cxx ChargeExchangeOperator.cxx OperatorToTimeDependent.cxx
 COMMON_OBJ      = $(COMMON_SRC:.cxx=.o)
 
 GUERNICA_SRC    = guernica.cxx

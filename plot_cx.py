@@ -99,7 +99,6 @@ def visualize_dg_solution(mesh_file, gf_file):
 
     plt.plot(zvals,sol,color='red',linestyle = '--')
 
-    plt.title(f"DG Solution (Order {order}) on Linear Mesh")
     plt.xlim(vertices.min(), vertices.max())
     plt.ylim(1e8, 1e19)
     plt.yscale('log')

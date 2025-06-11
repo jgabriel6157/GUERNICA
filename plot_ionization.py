@@ -104,7 +104,6 @@ def visualize_dg_solution(mesh_file, gf_file):
     f_vals = [f(z) for z in x_vals]
     plt.plot(x_vals,f_vals,color='red',linestyle = '--')
 
-    plt.title(f"DG Solution (Order {order}) on Linear Mesh")
     plt.xlim(vertices.min(), vertices.max())
     plt.ylim(1e9, 1e19)
     plt.yscale('log')

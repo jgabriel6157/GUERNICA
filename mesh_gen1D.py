@@ -55,4 +55,4 @@ def generate_mfem_1d_mesh(num_elements=4, length=1.0, periodic=True):
 
 
 # Example usage
-generate_mfem_1d_mesh(num_elements=48, length=40.0, periodic=False)
+generate_mfem_1d_mesh(num_elements=501, length=1.0, periodic=False)

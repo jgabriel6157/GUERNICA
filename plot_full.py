@@ -157,18 +157,16 @@ def animate_dg_solution_3d_disconnected(mesh_file, gf_pattern, vmin, vmax, num_v
 
     plt.show()
 
-def animate_dg_solution_3d_wireframe(mesh_file, gf_pattern, vmin, vmax, num_vel,
-                                     start=0, stop=1000, step=100, delay=0.1):
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
 
+def animate_dg_solution_3d_wireframe(mesh_file, gf_pattern, vmin, vmax, num_vel,
+                                     start=0, stop=1000, step=100, delay=0.1,
+                                     v_stride=1, x_stride=1):
     vertices, elements = parse_mesh_with_nodes(mesh_file)
     num_elements = len(elements)
 
     velocity_indices = list(range(num_vel))
     physical_velocities = np.linspace(vmin, vmax, num_vel)
 
-    # Sample to get DOFs and order
     sample_coeffs = read_gf(gf_pattern.format(0, start))
     dofs_per_elem = len(sample_coeffs) // num_elements
     order = dofs_per_elem - 1
@@ -177,7 +175,6 @@ def animate_dg_solution_3d_wireframe(mesh_file, gf_pattern, vmin, vmax, num_vel,
     x_eval = np.linspace(-1, 1, 10)
     basis = lagrange_basis_matrix(ref_nodes, x_eval)
 
-    # Build full physical x grid
     x_phys_list = []
     for i in range(num_elements):
         x0, x1 = vertices[2*i], vertices[2*i+1]
@@ -217,9 +214,14 @@ def animate_dg_solution_3d_wireframe(mesh_file, gf_pattern, vmin, vmax, num_vel,
 
         U = np.array(u_data)
 
+        # Downsample for display
+        X_plot = X[::v_stride, ::x_stride]
+        V_plot = V[::v_stride, ::x_stride]
+        U_plot = U[::v_stride, ::x_stride]
+
         if wire:
             wire.remove()
-        wire = ax.plot_wireframe(X, V, U, color='black', rstride=1, cstride=1)
+        wire = ax.plot_wireframe(X_plot, V_plot, U_plot, color='black')
 
         ax.set_title(f"Time Step: {t}")
         plt.pause(delay)
@@ -228,12 +230,12 @@ def animate_dg_solution_3d_wireframe(mesh_file, gf_pattern, vmin, vmax, num_vel,
 
 
 # Example call:
-# plot_dg_solution_3d_disconnected("ex9.mesh", "ex9-v{}-{}.gf", vmin=-1.0, vmax=1.0, num_vel=3, time_index=10)
+# plot_dg_solution_3d_disconnected("ex9.mesh", "gf_out/ex9-v{}-{}.gf", vmin=-6.0, vmax=6.0, num_vel=31, time_index=1)
 # animate_dg_solution_3d_disconnected("ex9.mesh", "ex9-v{}-{}.gf",
                                     #  vmin=-1.0, vmax=1.0, num_vel=9,
                                     #  start=10, stop=1000, step=10, delay=0.1)
 animate_dg_solution_3d_wireframe("ex9.mesh", "gf_out/ex9-v{}-{}.gf",
-                                 vmin=-20.0, vmax=20.0, num_vel=31,
-                                 start=0, stop=1000, step=100, delay=0.1)
+                                 vmin=-6.0, vmax=6.0, num_vel=127,
+                                 start=0, stop=4, step=1, delay=1, v_stride=3,x_stride=6)
 
 

@@ -2,6 +2,7 @@
 #include "InputConfig.hxx"
 #include "DG_Solver.hxx"
 #include "FE_Evolution.hxx"
+#include "DG_Advection.hxx"
 
 #include <fstream>
 #include <iostream>
@@ -25,6 +26,7 @@ VectorFunctionCoefficient MakeVelocityCoefficient(int dim, double v_value)
 double u0_function(const Vector &x)
 {
     return exp(-50.0 * pow(x(0) - 0.5, 2));
+    // return 1.0;
 }
 
 double inflow_function(const Vector &x)
@@ -88,82 +90,29 @@ int main(int argc, char *argv[])
     {
         vNodes[i] = vmin + i * (vmax - vmin) / (num_vel - 1);
     }
-    int Nv = vNodes.size();
+    const int Nv = vNodes.size();
 
     // FE space
     DG_FECollection fec(order, dim, BasisType::GaussLobatto);
     FiniteElementSpace fes(&mesh, &fec);
-    cout << "Number of unknowns per velocity: " << fes.GetVSize() << endl;
+    const int Ndof = fes.GetVSize();
+    cout << "Number of unknowns per velocity: " << Ndof << endl;
 
-    // Shared mass matrix
-    BilinearForm *m = new BilinearForm(&fes);
-    m->AddDomainIntegrator(new MassIntegrator);
-    if (pa) m->SetAssemblyLevel(AssemblyLevel::PARTIAL);
-    else if (ea) m->SetAssemblyLevel(AssemblyLevel::ELEMENT);
-    else if (fa) m->SetAssemblyLevel(AssemblyLevel::FULL);
-    m->Assemble();
-    m->Finalize();
-
-    // Solution vectors and structures per velocity
-    std::vector<GridFunction> u;
-    std::vector<BilinearForm*> k(Nv);
-    std::vector<Vector> b(Nv);
-    std::vector<FE_Evolution*> evolution(Nv);
-    std::vector<ODESolver*> solver(Nv);
-
-    // Solver factory
-    auto make_solver = [&]() -> ODESolver* 
+    Array<int> block_offsets(Nv+1);
+    for (int i=0; i<=Nv; i++)
     {
-        switch (ode_solver_type)
-        {
-            case 1:  return new ForwardEulerSolver;
-            case 2:  return new RK2Solver(1.0);
-            case 3:  return new RK3SSPSolver;
-            case 4:  return new RK4Solver;
-            case 6:  return new RK6Solver;
-            case 11: return new BackwardEulerSolver;
-            case 12: return new SDIRK23Solver(2);
-            case 13: return new SDIRK33Solver;
-            case 22: return new ImplicitMidpointSolver;
-            case 23: return new SDIRK23Solver;
-            case 24: return new SDIRK34Solver;
-            default:
-                cerr << "Unknown ODE solver type: " << ode_solver_type << endl;
-                exit(3);
-        }
-    };
+        block_offsets[i] = i*Ndof;
+    }
 
-    for (int i = 0; i < Nv; i++)
+    BlockVector U(block_offsets);
+    BlockVector dU(block_offsets);
+
+    // Initial condition into each block
+    FunctionCoefficient u0(u0_function);
+    for (int iv = 0; iv < Nv; ++iv)
     {
-        u.emplace_back(&fes);
-        FunctionCoefficient u0(u0_function);
-        u[i].ProjectCoefficient(u0);
-
-        auto vel_coeff = MakeVelocityCoefficient(dim, vNodes[i]);
-        FunctionCoefficient inflow(inflow_function);
-
-        // Convection matrix
-        k[i] = new BilinearForm(&fes);
-        k[i]->AddDomainIntegrator(new ConvectionIntegrator(vel_coeff, -1.0));
-        k[i]->AddInteriorFaceIntegrator(new NonconservativeDGTraceIntegrator(vel_coeff, -1.0));
-        k[i]->AddBdrFaceIntegrator(new NonconservativeDGTraceIntegrator(vel_coeff, -1.0));
-        if (pa) k[i]->SetAssemblyLevel(AssemblyLevel::PARTIAL);
-        else if (ea) k[i]->SetAssemblyLevel(AssemblyLevel::ELEMENT);
-        else if (fa) k[i]->SetAssemblyLevel(AssemblyLevel::FULL);
-        k[i]->Assemble();
-        k[i]->Finalize();
-
-        // Boundary flow vector
-        LinearForm bform(&fes);
-        bform.AddBdrFaceIntegrator(new BoundaryFlowIntegrator(inflow, vel_coeff, -1.0));
-        bform.Assemble();
-        b[i] = bform;
-
-        // Evolution and solver
-        evolution[i] = new FE_Evolution(*m, *k[i], b[i]);
-        evolution[i]->SetTime(0.0);
-        solver[i] = make_solver();
-        solver[i]->Init(*evolution[i]);
+        GridFunction ui(&fes, U.GetBlock(iv).GetData());
+        ui.ProjectCoefficient(u0);
     }
 
     // Save mesh and initial solutions
@@ -176,42 +125,46 @@ int main(int argc, char *argv[])
         ostringstream name;
         name << "gf_out/ex9-v" << i << "-0.gf";
         ofstream sol_out(name.str());
+        GridFunction ui(&fes, U.GetBlock(i).GetData());
         sol_out.precision(precision);
-        u[i].Save(sol_out);
+        ui.Save(sol_out);
     }
+
+    // Build the element-outer operator (advection, 1D)
+    DG_Advection op(fes, vNodes, t_final);
+
+    // One ODE solver for the whole stacked system
+    std::unique_ptr<ODESolver> solver;
+    switch (ode_solver_type) {
+        case 1:  solver = std::make_unique<ForwardEulerSolver>(); break;
+        case 2:  solver = std::make_unique<RK2Solver>(1.0); break;
+        case 3:  solver = std::make_unique<RK3SSPSolver>(); break;
+        case 4:  solver = std::make_unique<RK4Solver>(); break;
+        case 6:  solver = std::make_unique<RK6Solver>(); break;
+        default: solver = std::make_unique<RK3SSPSolver>(); break;
+    }
+    solver->Init(op);
 
     // Time loop
     double t = 0.0;
-    for (int ti = 0; t < t_final - 1e-8 * dt; ti++)
+    int ti = 0;
+    while (t < t_final - 1e-8*dt)
     {
-        double dt_real = min(dt, t_final - t);
-        for (int i = 0; i < Nv; i++) 
-        {
-            double local_t = t;
-            solver[i]->Step(u[i], local_t, dt_real);
-        }
-        t += dt_real;
+        double dt_real = std::min(dt, t_final - t);
+        solver->Step(U, t, dt_real);
+        ti++;
 
-        if ((ti+1) % vis_steps == 0 || t + 1e-8*dt >= t_final)
+        if ((ti % vis_steps) == 0 || t + 1e-8*dt >= t_final)
         {
-            cout << "Step " << ti+1 << ", time = " << t << endl;
-            for (int i = 0; i < Nv; i++) 
+            cout << "Step " << ti << ", time = " << t << endl;
+            for (int iv = 0; iv < Nv; ++iv)
             {
-                ostringstream name;
-                name << "gf_out/ex9-v" << i << "-" << (ti+1) << ".gf";
+                ostringstream name; name << "gf_out/ex9-v" << iv << "-" << ti << ".gf";
                 ofstream sol_out(name.str());
-                sol_out.precision(precision);
-                u[i].Save(sol_out);
+                GridFunction ui(&fes, U.GetBlock(iv).GetData());
+                ui.Save(sol_out);
             }
         }
-    }
-
-    // Cleanup
-    delete m;
-    for (int i = 0; i < Nv; i++) {
-        delete k[i];
-        delete evolution[i];
-        delete solver[i];
     }
 
     return 0;

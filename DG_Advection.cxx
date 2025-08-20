@@ -19,7 +19,7 @@ DG_Advection::DG_Advection(FiniteElementSpace &fes,
 {
     for (double v : vNodes_) { vmax_ = std::max(vmax_, std::abs(v)); }
 
-    // L2 DG needs the L2ElementRestriction (not the generic ElementRestriction)
+    // L2 DG needs the L2ElementRestriction
     elemR_ = std::make_unique<L2ElementRestriction>(fes_);
 
     // Buffers sized off first element (uniform p assumed)
@@ -37,7 +37,8 @@ void DG_Advection::PrecomputeElementMatrices(const std::vector<double> &vNodes)
 
     M_e_.resize(NE);
     K_e_.assign(Nv_, std::vector<DenseMatrix>(NE));
-    MinvLumped_.resize(NE);
+    Minv_e_.resize(NE);            // << explicit inverse per element
+    // (MinvLumped_ no longer used in this option.)
 
     MassIntegrator mi;
 
@@ -49,26 +50,21 @@ void DG_Advection::PrecomputeElementMatrices(const std::vector<double> &vNodes)
         // Element mass
         mi.AssembleElementMatrix(fe, Tr, M_e_[e]);
 
-        // Row-sum lumped inverse
-        const int ldof = M_e_[e].Height();
-        Vector Ml(ldof); Ml = 0.0;
-        for (int i = 0; i < ldof; ++i)
+        // Precompute explicit inverse of the consistent mass matrix
         {
-            double s = 0.0;
-            for (int j = 0; j < ldof; ++j) { s += M_e_[e](i,j); }
-            Ml(i) = s;
+            DenseMatrixInverse inv(M_e_[e]);  // LU factorization internally
+            Minv_e_[e].SetSize(M_e_[e].Height());
+            inv.GetInverseMatrix(Minv_e_[e]); // store M_e^{-1}
         }
-        MinvLumped_[e].SetSize(ldof);
-        for (int i = 0; i < ldof; ++i) { MinvLumped_[e](i) = 1.0 / Ml(i); }
 
-        // Per-velocity convection (volume) matrix
+        // Per-velocity convection (volume) matrix; sign -1 baked in
         for (int iv = 0; iv < Nv_; ++iv)
         {
             VectorFunctionCoefficient vcoef(1,
                 [v=vNodes[iv]](const Vector &, Vector &vv)
                 { vv.SetSize(1); vv = 0.0; vv(0) = v; });
 
-            ConvectionIntegrator ki(vcoef, -1.0); // du/dt = -K u
+            ConvectionIntegrator ki(vcoef, -1.0); // du/dt = K*u with -1 applied in K
             ki.AssembleElementMatrix(fe, Tr, K_e_[iv][e]);
         }
     }
@@ -197,9 +193,9 @@ void DG_Advection::Mult(const Vector &U, Vector &dUdt) const
             Vector Ue(Ue_all_list[iv].GetData() + off, ld);
             Vector Re(Re_all_list[iv].GetData() + off, ld);
 
-            // Re += -K_e * Ue   (accumulate; don't apply Minv yet)
+            // Volume residual already has the correct sign from assembly:
+            // Re += K_e_[iv][e] * Ue  (K_e holds the -1 factor for advection)
             K_e_[iv][e].Mult(Ue, Re);
-            // Re *= -1.0;
         }
     }
 
@@ -250,17 +246,19 @@ void DG_Advection::Mult(const Vector &U, Vector &dUdt) const
         }
     }
 
-    // -------- Apply M^{-1}_lumped per element (now that volume + faces are accumulated) --------
+    // -------- Apply CONSISTENT mass inverse per element --------
+    // Re_e := M_e^{-1} * Re_e  for each element e and velocity iv
     for (int e = 0; e < NE; ++e)
     {
         const int off = elem_off[e];
         const int ld  = elem_off[e+1] - off;
-        const Vector &Minv = MinvLumped_[e];
 
         for (int iv = 0; iv < Nv_; ++iv)
         {
             Vector Re(Re_all_list[iv].GetData() + off, ld);
-            for (int i = 0; i < ld; ++i) { Re(i) *= Minv(i); }
+            Vector tmp(ld); tmp = 0.0;
+            Minv_e_[e].Mult(Re, tmp);  // tmp = M_e^{-1} * Re
+            Re = tmp;                   // overwrite Re with result
         }
     }
 

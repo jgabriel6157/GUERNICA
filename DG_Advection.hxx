@@ -63,7 +63,7 @@ private:
   // ---- Precomputed element data ----
   std::vector<mfem::DenseMatrix> M_e_;                     // per-element mass
   std::vector<std::vector<mfem::DenseMatrix>> K_e_;        // [iv][e] volume convection
-  std::vector<mfem::Vector> MinvLumped_;                   // per-element lumped M^{-1}
+  std::vector<mfem::DenseMatrix> Minv_e_;
 
   // ---- Precomputed face data (per velocity) ----
   std::vector<std::vector<FaceBlock>> IFace_;              // [iv][interior face]

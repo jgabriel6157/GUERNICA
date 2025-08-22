@@ -1,35 +1,25 @@
 #include "mfem.hpp"
 #include "InputConfig.hxx"
-#include "DG_Solver.hxx"
-#include "FE_Evolution.hxx"
 #include "DG_Advection.hxx"
 
 #include <fstream>
 #include <iostream>
 #include <cmath>
 #include <filesystem>
+#include <memory>
+#include <sstream>
+#include <cstring>
 
 using namespace mfem;
 using namespace std;
 namespace fs = std::filesystem;
 
-VectorFunctionCoefficient MakeVelocityCoefficient(int dim, double v_value)
-{
-    return VectorFunctionCoefficient(dim, [=](const Vector &x, Vector &v) 
-    {
-        v.SetSize(dim);
-        v = 0.0;
-        v(0) = v_value;
-    });
-}
-
 double u0_function(const Vector &x)
 {
     return exp(-50.0 * pow(x(0) - 0.5, 2));
-    // return 1.0;
 }
 
-double inflow_function(const Vector &x)
+double inflow_function(const Vector &)
 {
     return 0.0;
 }
@@ -48,7 +38,6 @@ int main(int argc, char *argv[])
     double vmin = config.Get<double>("vmin", 0.0);
     double vmax = config.Get<double>("vmax", 1.0);
     int num_vel = config.Get<int>("num_vel", 2);
-    bool pa = false, ea = false, fa = false;
     const char *device_config = "cpu";
 
     int precision = 8;
@@ -62,20 +51,14 @@ int main(int argc, char *argv[])
     args.AddOption(&t_final, "-tf", "--t-final", "Final time.");
     args.AddOption(&dt, "-dt", "--time-step", "Time step.");
     args.AddOption(&vis_steps, "-vs", "--visualization-steps", "Steps between visualization outputs.");
-    args.AddOption(&pa, "-pa", "--partial-assembly", "-no-pa", "--no-partial-assembly", "Enable Partial Assembly.");
-    args.AddOption(&ea, "-ea", "--element-assembly", "-no-ea", "--no-element-assembly", "Enable Element Assembly.");
-    args.AddOption(&fa, "-fa", "--full-assembly", "-no-fa", "--no-full-assembly", "Enable Full Assembly.");
     args.AddOption(&device_config, "-d", "--device", "Device configuration string.");
-
     args.Parse();
     if (!args.Good()) { args.PrintUsage(cout); return 1; }
     args.PrintOptions(cout);
 
+    // Output dir
     std::string out_dir = "gf_out";
-    if (fs::exists(out_dir)) 
-    {
-        fs::remove_all(out_dir);
-    }
+    if (fs::exists(out_dir)) { fs::remove_all(out_dir); }
     fs::create_directory(out_dir);
 
     Device device(device_config);
@@ -84,13 +67,13 @@ int main(int argc, char *argv[])
     Mesh mesh(mesh_file, 1, 1);
     int dim = mesh.Dimension();
 
-    // Velocity grid
+    // Velocity grid (assumed num_vel >= 2 by config)
     std::vector<double> vNodes(num_vel);
-    for (int i = 0; i < num_vel; i++) 
+    for (int i = 0; i < num_vel; i++)
     {
         vNodes[i] = vmin + i * (vmax - vmin) / (num_vel - 1);
     }
-    const int Nv = vNodes.size();
+    const int Nv = (int)vNodes.size();
 
     // FE space
     DG_FECollection fec(order, dim, BasisType::GaussLobatto);
@@ -98,44 +81,88 @@ int main(int argc, char *argv[])
     const int Ndof = fes.GetVSize();
     cout << "Number of unknowns per velocity: " << Ndof << endl;
 
-    Array<int> block_offsets(Nv+1);
-    for (int i=0; i<=Nv; i++)
+    // Build the element-major operator (advection, 1D)
+    DG_Advection op(fes, vNodes, t_final);
+
+    // Introspection for element-major packing
+    const int NE = op.GetNE();
+    const int Ntot = op.GlobalSize();
+    const std::vector<int> &elem_base = op.ElemBase();
+
+    // Allocate element-major global vectors
+    Vector U(Ntot);
+    U = 0.0;
+    Vector dUdt(Ntot);
+    dUdt = 0.0;
+
+    // Initialize U with projected scalar initial condition, replicated across velocities
     {
-        block_offsets[i] = i*Ndof;
+        GridFunction u0_gf(&fes);
+        FunctionCoefficient u0c(u0_function);
+        u0_gf.ProjectCoefficient(u0c);
+
+        Array<int> vdofs;
+        Vector Ue; // element-local from L-layout
+
+        for (int e = 0; e < NE; ++e)
+        {
+            const int base = elem_base[e];
+            const int ld   = op.Ldof(e);
+
+            fes.GetElementVDofs(e, vdofs);
+            Ue.SetSize(ld);
+            u0_gf.GetSubVector(vdofs, Ue);
+
+            for (int iv = 0; iv < Nv; ++iv)
+            {
+                double *dst = U.Write() + base + iv*ld;
+                std::memcpy(dst, Ue.Read(), ld * sizeof(double));
+            }
+        }
     }
 
-    BlockVector U(block_offsets);
-    BlockVector dU(block_offsets);
-
-    // Initial condition into each block
-    FunctionCoefficient u0(u0_function);
-    for (int iv = 0; iv < Nv; ++iv)
-    {
-        GridFunction ui(&fes, U.GetBlock(iv).GetData());
-        ui.ProjectCoefficient(u0);
-    }
-
-    // Save mesh and initial solutions
+    // Save mesh and initial solutions (unpack to L-layout per velocity)
     ofstream omesh("ex9.mesh");
     omesh.precision(precision);
     mesh.Print(omesh);
 
-    for (int i = 0; i < Nv; i++) 
+    auto dump_fields = [&](int step, double tcur)
     {
-        ostringstream name;
-        name << "gf_out/ex9-v" << i << "-0.gf";
-        ofstream sol_out(name.str());
-        GridFunction ui(&fes, U.GetBlock(i).GetData());
-        sol_out.precision(precision);
-        ui.Save(sol_out);
-    }
+        Vector Ub(Ndof); // L-layout buffer
+        Array<int> vdofs;
 
-    // Build the element-outer operator (advection, 1D)
-    DG_Advection op(fes, vNodes, t_final);
+        for (int iv = 0; iv < Nv; ++iv)
+        {
+            Ub = 0.0;
+            for (int e = 0; e < NE; ++e)
+            {
+                const int base = elem_base[e];
+                const int ld   = op.Ldof(e);
+                fes.GetElementVDofs(e, vdofs);
 
-    // One ODE solver for the whole stacked system
+                Vector Uslab(const_cast<double*>(U.Read()) + base + iv*ld, ld);
+                Ub.SetSubVector(vdofs, Uslab);
+            }
+
+            GridFunction ui(&fes);
+            ui = Ub;
+
+            ostringstream name;
+            name << out_dir << "/ex9-v" << iv << "-" << step << ".gf";
+            ofstream sol_out(name.str());
+            sol_out.precision(precision);
+            ui.Save(sol_out);
+        }
+
+        cout << "Step " << step << ", time = " << tcur << endl;
+    };
+
+    dump_fields(0, 0.0);
+
+    // ODE solver
     std::unique_ptr<ODESolver> solver;
-    switch (ode_solver_type) {
+    switch (ode_solver_type)
+    {
         case 1:  solver = std::make_unique<ForwardEulerSolver>(); break;
         case 2:  solver = std::make_unique<RK2Solver>(1.0); break;
         case 3:  solver = std::make_unique<RK3SSPSolver>(); break;
@@ -156,14 +183,7 @@ int main(int argc, char *argv[])
 
         if ((ti % vis_steps) == 0 || t + 1e-8*dt >= t_final)
         {
-            cout << "Step " << ti << ", time = " << t << endl;
-            for (int iv = 0; iv < Nv; ++iv)
-            {
-                ostringstream name; name << "gf_out/ex9-v" << iv << "-" << ti << ".gf";
-                ofstream sol_out(name.str());
-                GridFunction ui(&fes, U.GetBlock(iv).GetData());
-                ui.Save(sol_out);
-            }
+            dump_fields(ti, t);
         }
     }
 

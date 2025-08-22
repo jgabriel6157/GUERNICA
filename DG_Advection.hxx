@@ -12,14 +12,21 @@ public:
                const std::vector<double> &vNodes,
                double t_final);
 
-  // RHS: dUdt = A(U)
+  // RHS: dUdt = A(U) with element-major layout
   void Mult(const mfem::Vector &U, mfem::Vector &dUdt) const override;
 
   // Optional helpers
   double MaxCharSpeed() const { return vmax_; }
 
+  // --- Minimal introspection needed by main for element-major vectors ---
+  int    GetNE()        const { return NE_; }
+  int    GetNv()        const { return Nv_; }
+  int    Ldof(int e)    const { return ldof_e_[e]; }
+  const std::vector<int>& ElemBase() const { return elem_base_; }
+  int    GlobalSize()   const { return ndof_total_; }
+
 private:
-  // ---- Types for precomputed face blocks ----
+  // ---- Types for precomputed face blocks (unit velocity) ----
   struct FaceBlock
   {
     // Interior face coupling: [eL <- {eL,eR}], [eR <- {eL,eR}]
@@ -38,36 +45,37 @@ private:
     int face = -1;           // optional metadata
   };
 
-  // ---- Precompute helpers ----
-  void PrecomputeElementMatrices(const std::vector<double> &vNodes);
-  void PrecomputeFaceBlocks(const std::vector<double> &vNodes);
+  // ---- Precompute helpers (now unit-velocity only) ----
+  void PrecomputeElementMatrices();
+  void PrecomputeFaceBlocks();
 
 private:
   // ---- Core references / sizes ----
   mfem::FiniteElementSpace &fes_;
-  int Nv_;                // number of velocities
-  int ndof_;              // global dofs per velocity block (fes_.GetVSize())
-  int ndof_face_;         // placeholder; not strictly required in current impl
-  double vmax_;           // max |v| for CFL checks
+  mfem::Mesh               &mesh_;
+  int dim_;
+  int NE_;                         // number of elements
+  int Nv_;                         // number of velocities
+  int ndof_total_;                 // total unknowns in element-major layout
+  double vmax_;                    // max |v| for CFL checks
   double t_final_;
 
-  // ---- Velocity grid (stored so faces can use it) ----
+  // ---- Element-major indexing ----
+  // Global vector is concatenation of element slabs; slab e has size Nv_ * ldof_e_[e]
+  std::vector<int> ldof_e_;        // ldof per element
+  std::vector<int> elem_base_;     // base offset of element slab in global vector (size NE_+1)
+
+  // ---- Velocity grid ----
   std::vector<double> vNodes_;
 
-  // ---- Restrictions ----
-  std::unique_ptr<mfem::L2ElementRestriction> elemR_;
-  // Note: L2FaceRestriction is not required by the current implementation,
-  // but you can add it later if you switch to face E-vectors.
-  // std::unique_ptr<mfem::L2FaceRestriction> faceR_;
+  // ---- Precomputed element data (unit velocity) ----
+  std::vector<mfem::DenseMatrix> M_e_;        // per-element mass
+  std::vector<mfem::DenseMatrix> Minv_e_;     // per-element mass inverse (consistent)
+  std::vector<mfem::DenseMatrix> K_e_unit_;   // per-element volume convection for v=+1 in x
 
-  // ---- Precomputed element data ----
-  std::vector<mfem::DenseMatrix> M_e_;                     // per-element mass
-  std::vector<std::vector<mfem::DenseMatrix>> K_e_;        // [iv][e] volume convection
-  std::vector<mfem::DenseMatrix> Minv_e_;
-
-  // ---- Precomputed face data (per velocity) ----
-  std::vector<std::vector<FaceBlock>> IFace_;              // [iv][interior face]
-  std::vector<std::vector<BdrFaceBlock>> BFace_;           // [iv][boundary face]
+  // Face blocks for v=+1 and v=-1 (needed for correct upwinding with sign)
+  std::vector<FaceBlock>    IFace_pos_, IFace_neg_;
+  std::vector<BdrFaceBlock> BFace_pos_, BFace_neg_;
 
   // ---- Scratch buffers (reused in Mult) ----
   mutable mfem::Vector Ue_;   // element-local dofs (size = ldof)

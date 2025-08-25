@@ -4,6 +4,7 @@
 #include "mfem.hpp"
 #include <vector>
 #include <memory>
+#include <iostream>
 
 class DG_Advection : public mfem::TimeDependentOperator
 {
@@ -11,6 +12,10 @@ public:
   DG_Advection(mfem::FiniteElementSpace &fes,
                const std::vector<double> &vNodes,
                double t_final);
+
+  // Build boundary inflow load for each velocity (unit-speed, scaled in Mult)
+  // inflow_fun(iv, x) should return g(x, v_iv)
+  void BuildInflow(std::function<double(int,const mfem::Vector&)> inflow_fun);
 
   // RHS: dUdt = A(U) with element-major layout
   void Mult(const mfem::Vector &U, mfem::Vector &dUdt) const override;
@@ -76,6 +81,11 @@ private:
   // Face blocks for v=+1 and v=-1 (needed for correct upwinding with sign)
   std::vector<FaceBlock>    IFace_pos_, IFace_neg_;
   std::vector<BdrFaceBlock> BFace_pos_, BFace_neg_;
+
+  // Inflow RHS (element-local vectors) assembled with unit velocities
+  bool has_inflow_ = false;
+  std::vector<std::vector<mfem::Vector>> B_inflow_pos_; // [e][iv], size ldof_e_[e]
+  std::vector<std::vector<mfem::Vector>> B_inflow_neg_; // [e][iv], size ldof_e_[e]
 
   // ---- Scratch buffers (reused in Mult) ----
   mutable mfem::Vector Ue_;   // element-local dofs (size = ldof)

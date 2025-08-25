@@ -96,32 +96,31 @@ int main(int argc, char *argv[])
     dUdt = 0.0;
 
     // Initialize U with projected scalar initial condition, replicated across velocities
+    GridFunction u0_gf(&fes);
+    FunctionCoefficient u0c(u0_function);
+    u0_gf.ProjectCoefficient(u0c);
+
+    Array<int> vdofs;
+    Vector Ue; // element-local from L-layout
+
+    for (int e = 0; e < NE; ++e)
     {
-        GridFunction u0_gf(&fes);
-        FunctionCoefficient u0c(u0_function);
-        u0_gf.ProjectCoefficient(u0c);
+        const int base = elem_base[e];
+        const int ld   = op.Ldof(e);
 
-        Array<int> vdofs;
-        Vector Ue; // element-local from L-layout
+        fes.GetElementVDofs(e, vdofs);
+        Ue.SetSize(ld);
+        u0_gf.GetSubVector(vdofs, Ue);
 
-        for (int e = 0; e < NE; ++e)
+        for (int iv = 0; iv < Nv; ++iv)
         {
-            const int base = elem_base[e];
-            const int ld   = op.Ldof(e);
-
-            fes.GetElementVDofs(e, vdofs);
-            Ue.SetSize(ld);
-            u0_gf.GetSubVector(vdofs, Ue);
-
-            for (int iv = 0; iv < Nv; ++iv)
-            {
-                double *dst = U.Write() + base + iv*ld;
-                std::memcpy(dst, Ue.Read(), ld * sizeof(double));
-            }
+            double *dst = U.Write() + base + iv*ld;
+            std::memcpy(dst, Ue.Read(), ld * sizeof(double));
         }
     }
 
-    // Save mesh and initial solutions (unpack to L-layout per velocity)
+
+    // Save mesh and initial solutions
     ofstream omesh("ex9.mesh");
     omesh.precision(precision);
     mesh.Print(omesh);

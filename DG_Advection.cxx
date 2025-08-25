@@ -3,8 +3,6 @@
 
 using namespace mfem;
 
-// ------------------------ ctor / precompute ------------------------
-
 DG_Advection::DG_Advection(FiniteElementSpace &fes,
                            const std::vector<double> &vNodes,
                            double t_final)
@@ -219,58 +217,58 @@ void DG_Advection::Mult(const Vector &U, Vector &dUdt) const
         const auto &IF = use_pos ? IFace_pos_ : IFace_neg_;
         const auto &BF = use_pos ? BFace_pos_ : BFace_neg_;
 
-    // Interior
-    for (const auto &fb : IF)
-    {
-        const int eL = fb.eL, eR = fb.eR;
-        const int baseL = elem_base_[eL], baseR = elem_base_[eR];
-        const int ldL = ldof_e_[eL], ldR = ldof_e_[eR];
-
-        for (int iv = 0; iv < Nv_; ++iv)
+        // Interior
+        for (const auto &fb : IF)
         {
-            const double v = vNodes_[iv];
-            if ((use_pos && v < 0.0) || (!use_pos && v > 0.0)) continue;
-            const double a = std::abs(v);
+            const int eL = fb.eL, eR = fb.eR;
+            const int baseL = elem_base_[eL], baseR = elem_base_[eR];
+            const int ldL = ldof_e_[eL], ldR = ldof_e_[eR];
 
-            Vector UeL(const_cast<double*>(U.GetData()) + baseL + iv*ldL, ldL);
-            Vector UeR(const_cast<double*>(U.GetData()) + baseR + iv*ldR, ldR);
-            Vector ReL(               dUdt.GetData()    + baseL + iv*ldL, ldL);
-            Vector ReR(               dUdt.GetData()    + baseR + iv*ldR, ldR);
+            for (int iv = 0; iv < Nv_; ++iv)
+            {
+                const double v = vNodes_[iv];
+                if ((use_pos && v < 0.0) || (!use_pos && v > 0.0)) continue;
+                const double a = std::abs(v);
 
-            Vector RL(ldL); RL = 0.0;
-            Vector RR(ldR); RR = 0.0;
+                Vector UeL(const_cast<double*>(U.GetData()) + baseL + iv*ldL, ldL);
+                Vector UeR(const_cast<double*>(U.GetData()) + baseR + iv*ldR, ldR);
+                Vector ReL(               dUdt.GetData()    + baseL + iv*ldL, ldL);
+                Vector ReR(               dUdt.GetData()    + baseR + iv*ldR, ldR);
 
-            fb.A_LL.Mult(UeL, RL);
-            fb.A_LR.AddMult(UeR, RL);
-            fb.A_RL.Mult(UeL, RR);
-            fb.A_RR.AddMult(UeR, RR);
+                Vector RL(ldL); RL = 0.0;
+                Vector RR(ldR); RR = 0.0;
 
-            ReL.Add(a, RL);
-            ReR.Add(a, RR);
+                fb.A_LL.Mult(UeL, RL);
+                fb.A_LR.AddMult(UeR, RL);
+                fb.A_RL.Mult(UeL, RR);
+                fb.A_RR.AddMult(UeR, RR);
+
+                ReL.Add(a, RL);
+                ReR.Add(a, RR);
+            }
         }
-    }
 
-    // Boundary
-    for (const auto &bf : BF)
-    {
-        const int e    = bf.e;
-        const int base = elem_base_[e];
-        const int ld   = ldof_e_[e];
-
-        for (int iv = 0; iv < Nv_; ++iv)
+        // Boundary
+        for (const auto &bf : BF)
         {
-            const double v = vNodes_[iv];
-            if ((use_pos && v < 0.0) || (!use_pos && v > 0.0)) continue;
-            const double a = std::abs(v);
+            const int e    = bf.e;
+            const int base = elem_base_[e];
+            const int ld   = ldof_e_[e];
 
-            Vector Ue(const_cast<double*>(U.GetData()) + base + iv*ld, ld);
-            Vector Re(               dUdt.GetData()    + base + iv*ld, ld);
+            for (int iv = 0; iv < Nv_; ++iv)
+            {
+                const double v = vNodes_[iv];
+                if ((use_pos && v < 0.0) || (!use_pos && v > 0.0)) continue;
+                const double a = std::abs(v);
 
-            Vector Rb(ld); Rb = 0.0;
-            bf.A_bdr.Mult(Ue, Rb);
-            Re.Add(a, Rb);
+                Vector Ue(const_cast<double*>(U.GetData()) + base + iv*ld, ld);
+                Vector Re(               dUdt.GetData()    + base + iv*ld, ld);
+
+                Vector Rb(ld); Rb = 0.0;
+                bf.A_bdr.Mult(Ue, Rb);
+                Re.Add(a, Rb);
+            }
         }
-    }
     }
 
     // -------- Apply consistent M^{-1} per (e,iv) in-place --------

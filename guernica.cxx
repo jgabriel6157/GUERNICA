@@ -2,6 +2,7 @@
 #include "InputConfig.hxx"
 #include "DG_Advection.hxx"
 #include "IonizationOperator.hxx"
+#include "ChargeExchangeOperator.hxx"
 #include "SumTDep.hxx"
 
 #include <fstream>
@@ -132,6 +133,8 @@ int main(int argc, char *argv[])
     int num_vel = config.Get<int>("num_vel", 2);
     bool ionization = config.Get<bool>("ionization", false);
     double nu0 = config.Get<double>("nu0",0.0);
+    bool cx = config.Get<bool>("cx", false);
+    double cx_rate = config.Get<double>("cx_rate", 0.0);
     const char *device_config = "cpu";
 
     int precision = 8;
@@ -177,8 +180,26 @@ int main(int argc, char *argv[])
 
     mfem::GridFunction rho(&fes), u_bulk(&fes), T(&fes);
 
+    // Constant coefficients for plasma parameters
+    ConstantCoefficient ni_coeff(5.0), Ti_coeff(20.0);
+    FunctionCoefficient ui_coeff([=](const Vector &x)
+    {
+        return (x(0) > 20.0) ? sqrt(20) : -sqrt(20);
+    });
+
+    // Project into GridFunctions
+    GridFunction ni_gf(&fes), ui_gf(&fes), Ti_gf(&fes);
+    ni_gf.ProjectCoefficient(ni_coeff);
+    ui_gf.ProjectCoefficient(ui_coeff);
+    Ti_gf.ProjectCoefficient(Ti_coeff);
+
+    std::shared_ptr<DG_Advection>           adv;
+    std::shared_ptr<IonizationOperator>     izOp;
+    std::shared_ptr<ChargeExchangeOperator> cxOp;
+    SumTDep                                 rhs;
+    
     // Build the element-major operator (advection, 1D)
-    auto adv = std::make_shared<DG_Advection>(fes, vNodes, t_final);
+    adv = std::make_shared<DG_Advection>(fes, vNodes, t_final);
 
     adv->BuildInflow([&](int iv, const mfem::Vector &x) -> double 
     {
@@ -318,17 +339,18 @@ int main(int argc, char *argv[])
         case 6:  solver = std::make_unique<RK6Solver>(); break;
         default: solver = std::make_unique<RK3SSPSolver>(); break;
     }
-    SumTDep rhs;
+
     rhs.Add(adv);
     if (ionization)
     {
         mfem::ConstantCoefficient nu_coeff(nu0);
-
-        // Build ionization operator (diagonal sink: dU/dt += -nu U)
-        auto ion = std::make_shared<IonizationOperator>(fes, vNodes, nu_coeff, t_final);
-
-        // Composite RHS = advection + ionization
-        rhs.Add(ion);
+        izOp = std::make_shared<IonizationOperator>(fes, vNodes, nu_coeff, t_final);
+        rhs.Add(izOp);
+    }
+    if (cx)
+    {
+        cxOp = std::make_shared<ChargeExchangeOperator>(fes, vNodes, ni_gf, ui_gf, Ti_gf, cx_rate);
+        rhs.Add(cxOp);
     }
     solver->Init(rhs);
 
@@ -343,6 +365,10 @@ int main(int argc, char *argv[])
 
         UnpackElementMajor(U, fes, adv->ElemBase(), vNodes, u_vs);
         ComputeMoments(u_vs, vNodes, fes, rho, u_bulk, T);
+        if (cx)
+        {
+            cxOp->SetNeutralDensity(rho);
+        }
 
         if ((ti % vis_steps) == 0 || t + 1e-8*dt >= t_final)
         {

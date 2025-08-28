@@ -1,6 +1,9 @@
 #include "mfem.hpp"
 #include "InputConfig.hxx"
 #include "DG_Advection.hxx"
+#include "IonizationOperator.hxx"
+#include "ChargeExchangeOperator.hxx"
+#include "SumTDep.hxx"
 
 #include <fstream>
 #include <iostream>
@@ -24,6 +27,96 @@ double inflow_function(const Vector &)
     return 0.0;
 }
 
+Vector integrate1D(const std::vector<GridFunction> &u,
+                   const std::vector<double> &vNodes,
+                   int power)
+{
+    int nv = vNodes.size();
+    int ndof = u[0].Size();
+    double dv = vNodes[1] - vNodes[0];
+
+    Vector result(ndof);
+    result = 0.0;
+
+    // Simpson's rule
+    for (int i = 0; i < nv; i++)
+    {
+        const double *f_i = u[i].GetData();
+        double v = vNodes[i];
+        double w;
+
+        if (i == 0 || i == nv - 1)
+            w = 1.0;
+        else if (i % 2 == 1)
+            w = 4.0;
+        else
+            w = 2.0;
+
+        double factor = w * pow(v, power);
+        for (int j = 0; j < ndof; j++)
+        {
+            result[j] += factor * f_i[j];
+        }
+    }
+
+    result *= dv / 3.0;
+    return result;
+}
+
+void ComputeMoments(const std::vector<GridFunction> &u,
+                    const std::vector<double> &vNodes,
+                    const FiniteElementSpace &fes,
+                    GridFunction &rho,
+                    GridFunction &u_bulk,
+                    GridFunction &T)
+{
+    Vector rho_v = integrate1D(u, vNodes, 0);
+    Vector mom_v = integrate1D(u, vNodes, 1);
+    Vector E_v   = integrate1D(u, vNodes, 2);
+
+    int ndof = fes.GetVSize();
+
+    rho.SetSize(ndof);
+    u_bulk.SetSize(ndof);
+    T.SetSize(ndof);
+
+    for (int i = 0; i < ndof; i++)
+    {
+        double r = rho_v[i];
+        double u = mom_v[i] / r;
+        double E = E_v[i];
+
+        rho[i] = r;
+        u_bulk[i] = u;
+        T[i] = (E - r * u * u) / r;
+    }
+}
+
+void UnpackElementMajor(const mfem::Vector &U,
+                        mfem::FiniteElementSpace &fes,
+                        const std::vector<int> &elem_base,
+                        const std::vector<double> &vNodes,
+                        std::vector<mfem::GridFunction> &u_out)
+{
+    const int Nv = (int)vNodes.size();
+    const int NE = fes.GetMesh()->GetNE();
+
+    u_out.clear();
+    u_out.reserve(Nv);
+    for (int iv = 0; iv < Nv; ++iv) { u_out.emplace_back(&fes); u_out.back() = 0.0; }
+
+    mfem::Array<int> vdofs;
+    for (int e = 0; e < NE; ++e) {
+        const int ld = fes.GetFE(e)->GetDof();
+        const int base = elem_base[e];
+        fes.GetElementVDofs(e, vdofs);
+        for (int iv = 0; iv < Nv; ++iv) {
+            mfem::Vector Ue(const_cast<double*>(U.Read()) + base + iv*ld, ld);
+            u_out[iv].SetSubVector(vdofs, Ue);
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     // Load config
@@ -38,6 +131,10 @@ int main(int argc, char *argv[])
     double vmin = config.Get<double>("vmin", 0.0);
     double vmax = config.Get<double>("vmax", 1.0);
     int num_vel = config.Get<int>("num_vel", 2);
+    bool ionization = config.Get<bool>("ionization", false);
+    double nu0 = config.Get<double>("nu0",0.0);
+    bool cx = config.Get<bool>("cx", false);
+    double cx_rate = config.Get<double>("cx_rate", 0.0);
     const char *device_config = "cpu";
 
     int precision = 8;
@@ -81,13 +178,50 @@ int main(int argc, char *argv[])
     const int Ndof = fes.GetVSize();
     cout << "Number of unknowns per velocity: " << Ndof << endl;
 
+    mfem::GridFunction rho(&fes), u_bulk(&fes), T(&fes);
+
+    // Constant coefficients for plasma parameters
+    ConstantCoefficient ni_coeff(5.0), Ti_coeff(20.0);
+    FunctionCoefficient ui_coeff([=](const Vector &x)
+    {
+        return (x(0) > 20.0) ? sqrt(20) : -sqrt(20);
+    });
+
+    // Project into GridFunctions
+    GridFunction ni_gf(&fes), ui_gf(&fes), Ti_gf(&fes);
+    ni_gf.ProjectCoefficient(ni_coeff);
+    ui_gf.ProjectCoefficient(ui_coeff);
+    Ti_gf.ProjectCoefficient(Ti_coeff);
+
+    std::shared_ptr<DG_Advection>           adv;
+    std::shared_ptr<IonizationOperator>     izOp;
+    std::shared_ptr<ChargeExchangeOperator> cxOp;
+    SumTDep                                 rhs;
+    
     // Build the element-major operator (advection, 1D)
-    DG_Advection op(fes, vNodes, t_final);
+    adv = std::make_shared<DG_Advection>(fes, vNodes, t_final);
+
+    adv->BuildInflow([&](int iv, const mfem::Vector &x) -> double 
+    {
+        const double v_i     = vNodes[iv];
+        const double T_rec   = 2.0;
+        const double rho_rec = 4.98;
+        const double u_rec   = std::sqrt(20.0);
+
+        // same side logic as your old code: left ~ x≈0 uses +u_rec, right uses -u_rec
+        const double u_shift = (x(0) < 1e-6) ? +u_rec : -u_rec;
+
+        const double coeff   = rho_rec / std::sqrt(2.0 * M_PI * T_rec);
+        const double dv      = v_i - u_shift;
+        const double exponent= - (dv*dv) / (2.0 * T_rec);
+
+        return coeff * std::exp(exponent);
+    });
 
     // Introspection for element-major packing
-    const int NE = op.GetNE();
-    const int Ntot = op.GlobalSize();
-    const std::vector<int> &elem_base = op.ElemBase();
+    const int NE = adv->GetNE();
+    const int Ntot = adv->GlobalSize();
+    const std::vector<int> &elem_base = adv->ElemBase();
 
     // Allocate element-major global vectors
     Vector U(Ntot);
@@ -96,29 +230,56 @@ int main(int argc, char *argv[])
     dUdt = 0.0;
 
     // Initialize U with projected scalar initial condition, replicated across velocities
-    GridFunction u0_gf(&fes);
-    FunctionCoefficient u0c(u0_function);
-    u0_gf.ProjectCoefficient(u0c);
-
     Array<int> vdofs;
-    Vector Ue; // element-local from L-layout
+    Vector Ue; // element-local buffer
 
-    for (int e = 0; e < NE; ++e)
+    for (int iv = 0; iv < Nv; ++iv)
     {
-        const int base = elem_base[e];
-        const int ld   = op.Ldof(e);
+        const double v_i = vNodes[iv];
 
-        fes.GetElementVDofs(e, vdofs);
-        Ue.SetSize(ld);
-        u0_gf.GetSubVector(vdofs, Ue);
-
-        for (int iv = 0; iv < Nv; ++iv)
+        // f0(x, v_i) per your formula
+        FunctionCoefficient f0([=](const Vector &x)
         {
+            const double xVal = x(0);
+
+            double rho;
+            if (xVal < 20.0)
+            {
+                // rho = 5*(cosh((20 + (x-20))/2)^(-2) + 1e-6)
+                rho = 5.0 * ( std::pow(std::cosh((20.0 + (xVal - 20.0))/2.0), -2.0) + 1e-6 );
+            }
+            else
+            {
+                // rho = 5*(cosh((20 - (x-20))/2)^(-2) + 1e-6)
+                rho = 5.0 * ( std::pow(std::cosh((20.0 - (xVal - 20.0))/2.0), -2.0) + 1e-6 );
+            }
+
+            const double T      = 2.0;
+            const double u_bulk = 0.0;
+
+            const double coeff    = rho / std::sqrt(2.0 * M_PI * T);
+            const double dv       = v_i - u_bulk;
+            const double exponent = -(dv*dv) / (2.0 * T);
+            return coeff * std::exp(exponent);
+        });
+
+        // Project f0 onto the FE space for this velocity, then pack into U (element-major)
+        GridFunction u0_gf(&fes);
+        u0_gf.ProjectCoefficient(f0);
+
+        for (int e = 0; e < NE; ++e)
+        {
+            const int base = elem_base[e];
+            const int ld   = adv->Ldof(e);          // use your operator’s ldof accessor
+
+            fes.GetElementVDofs(e, vdofs);
+            Ue.SetSize(ld);
+            u0_gf.GetSubVector(vdofs, Ue);
+
             double *dst = U.Write() + base + iv*ld;
             std::memcpy(dst, Ue.Read(), ld * sizeof(double));
         }
     }
-
 
     // Save mesh and initial solutions
     ofstream omesh("ex9.mesh");
@@ -136,7 +297,7 @@ int main(int argc, char *argv[])
             for (int e = 0; e < NE; ++e)
             {
                 const int base = elem_base[e];
-                const int ld   = op.Ldof(e);
+                const int ld   = adv->Ldof(e);
                 fes.GetElementVDofs(e, vdofs);
 
                 Vector Uslab(const_cast<double*>(U.Read()) + base + iv*ld, ld);
@@ -153,9 +314,18 @@ int main(int argc, char *argv[])
             ui.Save(sol_out);
         }
 
+        std::ostringstream rname;
+        rname << "gf_out/rho-" << (step) << ".gf";
+        std::ofstream rout(rname.str());
+        rout.precision(precision);
+        rho.Save(rout);
+
         cout << "Step " << step << ", time = " << tcur << endl;
     };
 
+    std::vector<mfem::GridFunction> u_vs;
+    UnpackElementMajor(U, fes, adv->ElemBase(), vNodes, u_vs);
+    ComputeMoments(u_vs, vNodes, fes, rho, u_bulk, T);
     dump_fields(0, 0.0);
 
     // ODE solver
@@ -169,7 +339,20 @@ int main(int argc, char *argv[])
         case 6:  solver = std::make_unique<RK6Solver>(); break;
         default: solver = std::make_unique<RK3SSPSolver>(); break;
     }
-    solver->Init(op);
+
+    rhs.Add(adv);
+    if (ionization)
+    {
+        mfem::ConstantCoefficient nu_coeff(nu0);
+        izOp = std::make_shared<IonizationOperator>(fes, vNodes, nu_coeff, t_final);
+        rhs.Add(izOp);
+    }
+    if (cx)
+    {
+        cxOp = std::make_shared<ChargeExchangeOperator>(fes, vNodes, ni_gf, ui_gf, Ti_gf, cx_rate);
+        rhs.Add(cxOp);
+    }
+    solver->Init(rhs);
 
     // Time loop
     double t = 0.0;
@@ -179,6 +362,13 @@ int main(int argc, char *argv[])
         double dt_real = std::min(dt, t_final - t);
         solver->Step(U, t, dt_real);
         ti++;
+
+        UnpackElementMajor(U, fes, adv->ElemBase(), vNodes, u_vs);
+        ComputeMoments(u_vs, vNodes, fes, rho, u_bulk, T);
+        if (cx)
+        {
+            cxOp->SetNeutralDensity(rho);
+        }
 
         if ((ti % vis_steps) == 0 || t + 1e-8*dt >= t_final)
         {

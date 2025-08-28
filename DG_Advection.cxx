@@ -182,6 +182,62 @@ void DG_Advection::PrecomputeFaceBlocks()
     }
 }
 
+void DG_Advection::BuildInflow(std::function<double(int,const mfem::Vector&)> inflow_fun)
+{
+    const int Ndof = fes_.GetVSize();
+    const int NE   = NE_;
+    const int Nv   = Nv_;
+
+    // Unit velocity coefficients (match what you used for face matrices)
+    VectorFunctionCoefficient v_pos(dim_, [this](const Vector&, Vector &vv)
+    { vv.SetSize(dim_); vv = 0.0; vv(0) =  1.0; });
+    VectorFunctionCoefficient v_neg(dim_, [this](const Vector&, Vector &vv)
+    { vv.SetSize(dim_); vv = 0.0; vv(0) = -1.0; });
+
+    // Resize storage: element-major per-velocity rhs vectors
+    B_inflow_pos_.assign(NE, std::vector<mfem::Vector>(Nv));
+    B_inflow_neg_.assign(NE, std::vector<mfem::Vector>(Nv));
+
+    // Workspace
+    Array<int> vdofs;
+    Vector elvec;
+
+    for (int iv = 0; iv < Nv; ++iv)
+    {
+        // g(x, v_iv)
+        FunctionCoefficient g_iv([&, iv](const Vector &x) {
+            return inflow_fun(iv, x);
+        });
+
+        // Assemble boundary linear forms for unit +x and -x
+        LinearForm b_pos(&fes_), b_neg(&fes_);
+        b_pos.AddBdrFaceIntegrator(new BoundaryFlowIntegrator(g_iv, v_pos, -1.0));
+        b_neg.AddBdrFaceIntegrator(new BoundaryFlowIntegrator(g_iv, v_neg, -1.0));
+        b_pos.Assemble();
+        b_neg.Assemble();
+
+        // Scatter global b into element-local vectors and store
+        for (int e = 0; e < NE; ++e)
+        {
+            const int ld = ldof_e_[e];
+            fes_.GetElementVDofs(e, vdofs);
+
+            // pos
+            B_inflow_pos_[e][iv].SetSize(ld);
+            elvec.SetSize(ld);
+            for (int i = 0; i < ld; ++i) { elvec[i] = b_pos[vdofs[i]]; }
+            B_inflow_pos_[e][iv] = elvec;
+
+            // neg
+            B_inflow_neg_[e][iv].SetSize(ld);
+            for (int i = 0; i < ld; ++i) { elvec[i] = b_neg[vdofs[i]]; }
+            B_inflow_neg_[e][iv] = elvec;
+        }
+    }
+
+    has_inflow_ = true;
+}
+
 // ----------------------------- Mult --------------------------------
 
 void DG_Advection::Mult(const Vector &U, Vector &dUdt) const
@@ -267,6 +323,27 @@ void DG_Advection::Mult(const Vector &U, Vector &dUdt) const
                 Vector Rb(ld); Rb = 0.0;
                 bf.A_bdr.Mult(Ue, Rb);
                 Re.Add(a, Rb);
+            }
+        }
+        if (has_inflow_)
+        {
+            // Add boundary inflow load vectors (assembled at unit speed)
+            for (int e = 0; e < NE_; ++e)
+            {
+                const int base = elem_base_[e];
+                const int ld   = ldof_e_[e];
+
+                for (int iv = 0; iv < Nv_; ++iv)
+                {
+                    const double v = vNodes_[iv];
+                    if ((use_pos && v < 0.0) || (!use_pos && v > 0.0)) { continue; }
+                    const double a = std::abs(v);
+
+                    Vector Re(dUdt.GetData() + base + iv*ld, ld);
+                    const Vector &b_loc = use_pos ? B_inflow_pos_[e][iv] : B_inflow_neg_[e][iv];
+
+                    Re.Add(a, b_loc);  // add to residual BEFORE final Minv
+                }
             }
         }
     }
